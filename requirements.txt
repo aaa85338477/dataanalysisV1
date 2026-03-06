@@ -5,3 +5,4 @@ scipy
 google-generativeai
 openpyxl
 tabulate
+requests
