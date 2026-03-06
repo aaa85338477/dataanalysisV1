@@ -5,6 +5,8 @@ from scipy.optimize import curve_fit
 import google.generativeai as genai
 import io
 import warnings
+import requests
+import json
 
 # 忽略计算过程中的警告
 warnings.filterwarnings('ignore')
@@ -146,13 +148,11 @@ if uploaded_file is not None:
             # ==========================================
             st.header("🤖 AI 游戏运营总监 诊断报告")
             
-            # 使用 session_state 记住当前上传的文件，避免重复点击时反复刷新
             if "last_file" not in st.session_state or st.session_state.last_file != uploaded_file.name:
                 st.session_state.last_file = uploaded_file.name
                 st.session_state.basic_report = None
                 st.session_state.deep_report = None
 
-            # 提取近期数据与预估指标
             overall_data_md = df_overall.tail(7).to_markdown(index=False)
             latest_date = df_overall.iloc[-1]['日期']
             
@@ -172,8 +172,8 @@ if uploaded_file is not None:
             {overall_data_md}
             
             要求：不要任何废话和客套话，采用要点式(Bullet points)输出。
-            1. 大盘趋势：近7天活跃、ARPU是涨是跌。
-            2. 回本结论：基于预估ROI，这批用户30天能否回本？
+            1. 大盘趋势：近7天注册留存、付费留存、付费率、活跃、ARPU是涨是跌。
+            2. 回本结论：基于预估ROI和LTV表现，分析这批用户在第30天的表现如何？
             控制在 150 字左右。
             """
 
@@ -189,7 +189,6 @@ if uploaded_file is not None:
 
             # --- 深度分析 (点击按钮后生成) ---
             if st.session_state.deep_report is None:
-                # 只有还没生成深度报告时，才显示这个按钮
                 if st.button("🔍 需要更深度的业务剖析？", type="primary"):
                     prompt_deep = f"""
                     你是一位资深的海外游戏发行运营专家。请基于以下整体数据与预估数据，输出一份专业的【深度业务剖析】。
@@ -205,7 +204,6 @@ if uploaded_file is not None:
                     """
                     with st.spinner('🔬 正在结合 UA 与双层留存结构生成深度剖析...'):
                         st.session_state.deep_report = model.generate_content(prompt_deep).text
-                        # 生成完毕后，强制页面重新加载一次以显示报告，并隐藏按钮
                         st.rerun() 
 
             if st.session_state.deep_report is not None:
@@ -213,10 +211,49 @@ if uploaded_file is not None:
                 st.markdown("### 🔬 深度业务剖析")
                 st.markdown(st.session_state.deep_report)
                 
-                # 可选：提供一个收起深度报告的按钮
                 if st.button("收起深度报告"):
                     st.session_state.deep_report = None
                     st.rerun()
+
+            # ==========================================
+            # 6. 飞书 Webhook 一键推送
+            # ==========================================
+            st.markdown("---")
+            st.subheader("📢 报告分发")
+            
+            def push_to_feishu(basic_text, deep_text, date):
+                webhook_url = "https://open.feishu.cn/open-apis/bot/v2/hook/20a3f60d-36f2-4a73-9879-3058c697a7b8"
+                
+                # 组装飞书消息文本
+                msg_content = f"📅 【游戏数据预估与诊断日报】 {date}\n\n📊 --- 基础数据速览 ---\n{basic_text}"
+                if deep_text:
+                    msg_content += f"\n\n🔬 --- 深度业务剖析 ---\n{deep_text}"
+                    
+                payload = {
+                    "msg_type": "text",
+                    "content": {
+                        "text": msg_content
+                    }
+                }
+                
+                headers = {'Content-Type': 'application/json'}
+                response = requests.post(webhook_url, data=json.dumps(payload), headers=headers)
+                return response.status_code == 200
+
+            # 加上样式和交互反馈
+            col1, col2 = st.columns([1, 4])
+            with col1:
+                if st.button("🚀 一键推送到飞书群"):
+                    with st.spinner("正在呼叫飞书机器人..."):
+                        success = push_to_feishu(
+                            st.session_state.basic_report, 
+                            st.session_state.deep_report, 
+                            latest_date
+                        )
+                        if success:
+                            st.success("✅ 推送成功！")
+                        else:
+                            st.error("❌ 推送失败，请检查 Webhook 连通性。")
 
         except Exception as e:
             st.error(f"处理过程中发生错误，请检查表单格式是否匹配。错误详情：{e}")
