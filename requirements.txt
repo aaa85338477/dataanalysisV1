@@ -4,3 +4,4 @@ numpy
 scipy
 google-generativeai
 openpyxl
+tabulate
