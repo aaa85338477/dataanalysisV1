@@ -7,6 +7,7 @@ import io
 import warnings
 import requests
 import json
+import time  # 新增 time 模块用于休眠重试
 
 warnings.filterwarnings('ignore')
 
@@ -30,45 +31,60 @@ with st.sidebar:
     st.header("⚙️ 系统配置")
     api_key_input = st.text_input("请输入 Gemini API Key", type="password")
     st.markdown("---")
-    
-    # 替换为完整的版本演进日志
     st.markdown("""
     ### 🚀 系统功能演进
     
     **📍 V1.0 基础预估架构**
-    - **长线预测**：30日留存与LTV曲线拟合。
-    - **AI 诊断**：基础大盘定性与深度业务剖析。
+    - 30日留存与LTV曲线拟合。
     
     **📍 V2.0 动态适配与协同**
-    - **万能映射面板**：自适应任意格式的堆叠表单。
-    - **ChatBI 助理**：支持基于上下文的自然语言追问。
-    - **消息协同**：诊断报告一键推送至飞书工作群。
+    - 万能映射自适应任意格式报表。
+    - ChatBI 助理支持自然语言追问。
 
-    **📍 V3.0 智能决策中枢**
-    - **AutoML 算法池**：动态计算 MSE 自动选用最优模型。
-    - **RCA 智能归因**：皮尔逊相关性矩阵挖掘异常元凶。
+    **📍 V3.1 智能决策与高可用**
+    - **AutoML 算法池**：动态选用最优模型。
+    - **RCA 智能归因**：皮尔逊相关性扫描。
+    - **抗并发重试引擎**：429 报错自动冷却重试。
     """)
-    
     if api_key_input:
-        genai.configure(api_key=api_key_input)
+        # 加上 .strip() 彻底免疫误复制的隐形空格
+        genai.configure(api_key=api_key_input.strip())
+
+# ==========================================
+# 🌟 新增：抗并发的大模型安全调用函数
+# ==========================================
+def safe_generate(model, prompt, max_retries=3):
+    """带自动冷却重试机制的 API 调用"""
+    for attempt in range(max_retries):
+        try:
+            return model.generate_content(prompt).text
+        except Exception as e:
+            error_msg = str(e)
+            if "429" in error_msg or "Quota" in error_msg:
+                if attempt < max_retries - 1:
+                    wait_seconds = 60 # 遇到429，固定冷却 60 秒
+                    st.warning(f"⏳ 触发免费版 API 频率限制 (15次/分钟)。系统自动进入冷却排队... 将在 {wait_seconds} 秒后自动重试 ({attempt+1}/{max_retries})")
+                    time.sleep(wait_seconds)
+                else:
+                    raise Exception(f"API 额度已彻底耗尽，多次重试失败，请稍后再试。详情: {error_msg}")
+            else:
+                raise e
 
 # ==========================================
 # 2. AutoML：动态算法池与核心预测引擎
 # ==========================================
-# 定义基础数学模型
 def power_curve(x, a, b): return a * np.power(x, b)
 def log_curve(x, a, b): return a * np.log(x) + b
 def exp_curve(x, a, b): return a * np.exp(b * x)
 def linear_curve(x, a, b): return a * x + b
 
-# 定义留存和变现的候选算法池
 RETENTION_MODELS = {'幂函数(Power)': power_curve, '指数函数(Exponential)': exp_curve}
 REVENUE_MODELS = {'对数函数(Logarithmic)': log_curve, '线性函数(Linear)': linear_curve, '幂函数(Power)': power_curve}
 
 def predict_and_fill_automl(df, candidate_models, is_retention=False):
     df_calc = df.set_index(df.columns[0]).astype(float)
     filled_data = []
-    best_model_for_latest = "未知" # 记录最后一天选用的最优模型
+    best_model_for_latest = "未知" 
     
     for date, row in df_calc.iterrows():
         y = row.values
@@ -81,12 +97,11 @@ def predict_and_fill_automl(df, candidate_models, is_retention=False):
             best_y_final = y
             best_model_name = "未拟合"
             
-            # AutoML 核心：遍历候选模型池，寻找最小均方误差 (MSE)
             for model_name, model_func in candidate_models.items():
                 try:
                     popt, _ = curve_fit(model_func, x_train, y_train, maxfev=10000)
                     y_pred_train = model_func(x_train, *popt)
-                    mse = np.mean((y_train - y_pred_train) ** 2) # 计算误差
+                    mse = np.mean((y_train - y_pred_train) ** 2) 
                     
                     if mse < best_mse:
                         best_mse = mse
@@ -120,17 +135,15 @@ def highlight_predicted_cells(df_filled, df_raw):
     return styles
 
 # ==========================================
-# 3. RCA：智能归因分析引擎 (皮尔逊相关系数)
+# 3. RCA：智能归因分析引擎 
 # ==========================================
 def calculate_rca_correlations(df):
-    # 只提取数值列进行相关性计算
     numeric_df = df.select_dtypes(include=[np.number])
     if numeric_df.empty: return "数据不足，无法计算相关性。"
     
     corr_matrix = numeric_df.corr()
     strong_pairs = []
     
-    # 筛选绝对值大于 0.7 的强相关指标
     for i in range(len(corr_matrix.columns)):
         for j in range(i+1, len(corr_matrix.columns)):
             col1 = corr_matrix.columns[i]
@@ -224,7 +237,6 @@ if uploaded_file is not None:
                         st.session_state.df_ltv = df_ltv_filled
                         st.session_state.table_names = table_names
                         
-                        # 保存 AutoML 选出的最优模型
                         st.session_state.automl_models = {
                             "注册留存": best_reg_model, "付费留存": best_pay_model,
                             "ROI": best_roi_model, "LTV": best_ltv_model
@@ -266,7 +278,7 @@ if uploaded_file is not None:
                 with col_btn:
                     st.download_button("📥 下载 AutoML 预测报表 (Excel)", data=st.session_state.excel_data, file_name="AI_Dynamic_Prediction_V3.xlsx")
                 with col_info:
-                    st.success(f"🤖 **AutoML 最新日 ({st.session_state.latest_date}) 模型选择：** LTV采用 [{st.session_state.automl_models['LTV']}]，留存采用 [{st.session_state.automl_models['注册留存']}]")
+                    st.success(f"🤖 **AutoML 最新日 ({st.session_state.latest_date}) 模型：** LTV采用 [{st.session_state.automl_models['LTV']}]，留存采用 [{st.session_state.automl_models['注册留存']}]")
 
                 st.markdown("---")
                 tab1, tab2 = st.tabs(["📑 RCA 深度诊断报告", "💬 ChatBI 交互查询"])
@@ -283,7 +295,8 @@ if uploaded_file is not None:
                         """
                         model = genai.GenerativeModel('gemini-2.5-flash-lite')
                         with st.spinner('🚀 正在提炼基础诊断...'):
-                            st.session_state.basic_report = model.generate_content(prompt_basic).text
+                            # 调用安全的重试函数
+                            st.session_state.basic_report = safe_generate(model, prompt_basic)
                             st.session_state.deep_report = None 
 
                     st.info(f"📅 **诊断日期：** {st.session_state.latest_date}")
@@ -296,25 +309,22 @@ if uploaded_file is not None:
                             prompt_deep = f"""
                             你是一位资深的海外游戏发行运营专家。请基于以下整体数据与 RCA（根因分析）相关性结果，输出一份专业的【深度业务剖析】。
                             
-                            【大盘数据(近7天)】：
-                            {overall_data_md}
-                            
-                            【RCA 底层指标相关性扫描结果】（这是代码跑出的数学强相关线索）：
-                            {st.session_state.rca_context}
+                            【大盘数据(近7天)】：\n{overall_data_md}\n
+                            【RCA 底层指标相关性扫描结果】：\n{st.session_state.rca_context}\n
                             
                             要求摒弃套话，结合 RCA 线索，从以下三个维度展开：
-                            1. **UA（用户获取）与初期付费**：评估首日付费率与新增ARPU，分析当前初期的出价空间如何。
-                            2. **RCA 归因诊断**：重点解读提供的“强相关指标对”，解释这些指标同涨同跌的底层业务逻辑（如：是因为大R拉动了整体，还是白嫖用户增多导致留存虚高？），并找出当前大盘表现的潜在突破口或隐患元凶。
-                            3. **落地调优建议**：给出至少 2 条能直接执行的调优建议。
+                            1. **UA与初期付费**：评估首日付费率与新增ARPU。
+                            2. **RCA 归因诊断**：重点解读提供的“强相关指标对”，解释同涨同跌的底层业务逻辑。
+                            3. **落地调优建议**：给出至少 2 条能直接执行的建议。
                             """
                             with st.spinner('🔬 AI 正在解读 RCA 相关矩阵，撰写深度归因分析...'):
                                 model = genai.GenerativeModel('gemini-2.5-flash-lite')
-                                st.session_state.deep_report = model.generate_content(prompt_deep).text
+                                # 调用安全的重试函数
+                                st.session_state.deep_report = safe_generate(model, prompt_deep)
                                 st.rerun()
 
                     if st.session_state.deep_report is not None:
                         st.markdown("---")
-                        # 将数学得出的相关性直接展示给用户看
                         with st.expander("🛠️ 展开查看底层 RCA 相关系数矩阵", expanded=False):
                             st.markdown(st.session_state.rca_context)
                         st.markdown("### 🔬 RCA 深度业务归因剖析")
@@ -357,9 +367,10 @@ if uploaded_file is not None:
                         with st.chat_message("assistant"):
                             with st.spinner("🤔 AI 正在计算..."):
                                 chat_model = genai.GenerativeModel('gemini-2.5-flash-lite')
-                                response = chat_model.generate_content(chat_prompt)
-                                st.markdown(response.text)
-                        st.session_state.chat_history.append({"role": "assistant", "content": response.text})
+                                # 调用安全的重试函数
+                                response_text = safe_generate(chat_model, chat_prompt)
+                                st.markdown(response_text)
+                        st.session_state.chat_history.append({"role": "assistant", "content": response_text})
 
             except Exception as e:
                 st.error(f"处理错误：{e}")
