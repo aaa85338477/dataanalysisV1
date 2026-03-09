@@ -46,7 +46,7 @@ with st.sidebar:
     
     **📍 V4.0 无界限引擎 (当前版本)**
     - **中转站直连**：彻底告别 429 频控报错。
-    - **GPT-4o-mini 驱动**：极速推理与强大并发支撑。
+    - **gemini-3.1-flash-lite-preview 驱动**：极速推理与强大并发支撑。
     """)
 
 # ==========================================
@@ -63,7 +63,7 @@ def safe_generate(prompt, api_key, max_retries=3):
     }
     
     payload = json.dumps({
-        "model": "gpt-4o-mini", # 可随时无缝切换为 gpt-4o 或 claude-3-5-sonnet
+        "model": "gemini-3.1-flash-lite-preview", # 可随时无缝切换为 gpt-4o 或 claude-3-5-sonnet
         "messages": [
             {
                 "role": "system",
@@ -389,7 +389,7 @@ if uploaded_file is not None:
                         chat_prompt = f"根据以下数据回答。\n{full_context_data}\n【用户问题】：{user_query}"
 
                         with st.chat_message("assistant"):
-                            with st.spinner("🤔 GPT-4o-mini 正在急速推理..."):
+                            with st.spinner("🤔 gemini-3.1-flash-lite-preview 正在急速推理..."):
                                 # 调用中转站接口
                                 response_text = safe_generate(chat_prompt, clean_api_key)
                                 st.markdown(response_text)
