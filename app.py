@@ -30,7 +30,25 @@ with st.sidebar:
     st.header("⚙️ 系统配置")
     api_key_input = st.text_input("请输入 Gemini API Key", type="password")
     st.markdown("---")
-    st.markdown("### 🔬 V3.0 引擎说明\n- **AutoML 算法池**：动态计算 MSE 选择最优拟合模型。\n- **RCA 智能归因**：皮尔逊相关性矩阵扫描。")
+    
+    # 替换为完整的版本演进日志
+    st.markdown("""
+    ### 🚀 系统功能演进
+    
+    **📍 V1.0 基础预估架构**
+    - **长线预测**：30日留存与LTV曲线拟合。
+    - **AI 诊断**：基础大盘定性与深度业务剖析。
+    
+    **📍 V2.0 动态适配与协同**
+    - **万能映射面板**：自适应任意格式的堆叠表单。
+    - **ChatBI 助理**：支持基于上下文的自然语言追问。
+    - **消息协同**：诊断报告一键推送至飞书工作群。
+
+    **📍 V3.0 智能决策中枢**
+    - **AutoML 算法池**：动态计算 MSE 自动选用最优模型。
+    - **RCA 智能归因**：皮尔逊相关性矩阵挖掘异常元凶。
+    """)
+    
     if api_key_input:
         genai.configure(api_key=api_key_input)
 
