@@ -16,7 +16,6 @@ warnings.filterwarnings('ignore')
 st.set_page_config(page_title="出海游戏 | 数据预估与诊断系统", page_icon="📈", layout="wide")
 st.title("📈 游戏核心指标自动预估与 AI 诊断系统")
 
-# 初始化缓存映射字典 (缓存用户习惯)
 default_mapping = {
     'col_date': '日期',
     'exclude_word': '汇总',
@@ -36,7 +35,7 @@ with st.sidebar:
         genai.configure(api_key=api_key_input)
 
 # ==========================================
-# 2. 核心数学预估与样式函数 (保持不变)
+# 2. 核心数学预估与样式函数
 # ==========================================
 def power_curve(x, a, b): return a * np.power(x, b)
 def log_curve(x, a, b): return a * np.log(x) + b
@@ -76,28 +75,22 @@ def highlight_predicted_cells(df_filled, df_raw):
     return styles
 
 # ==========================================
-# 3. 主页面：文件上传与【动态映射面板】
+# 3. 主页面：文件上传与动态映射面板
 # ==========================================
 uploaded_file = st.file_uploader("📂 请上传游戏分天业务数据 (Excel格式)", type=["xlsx", "xls"])
 
 if uploaded_file is not None:
-    # --- 动态读取 Excel 结构 ---
     xl = pd.ExcelFile(uploaded_file)
     sheet_names = xl.sheet_names
     
-    # 构建映射UI
     with st.expander("🛠️ 报表字段动态映射 (系统会自动记住选择)", expanded=True):
         col1, col2 = st.columns(2)
         with col1:
             st.markdown("**📊 整体大盘数据配置**")
             sheet_overall = st.selectbox("大盘数据所在 Sheet", sheet_names, index=0)
-            
-            # 动态读取该Sheet的表头供用户选择
             df_preview = pd.read_excel(uploaded_file, sheet_name=sheet_overall, nrows=0)
             available_cols = list(df_preview.columns)
             default_date_idx = available_cols.index(st.session_state.col_date) if st.session_state.col_date in available_cols else 0
-            
-            # 使用 key 参数直接双向绑定到 session_state 缓存
             st.selectbox("【日期】所在列名", available_cols, index=default_date_idx, key="col_date")
             st.text_input("需剔除的无效行(如: 汇总)", key="exclude_word")
 
@@ -107,67 +100,84 @@ if uploaded_file is not None:
             st.text_input("堆叠表的切割关键字(英文逗号分隔)", key="split_keys")
             st.text_input("从上到下的表格顺序(英文逗号分隔)", key="block_order")
 
-    # 仅当映射完成，且存在API Key时，提供执行按钮
     if not api_key_input:
         st.warning("👈 请先在左侧边栏输入您的 Gemini API Key。")
     else:
-        if st.button("🚀 开始分析与预估", type="primary"):
+        # 使用 Session State 记录是否已经分析过，避免切换选项卡时重跑
+        if "data_processed" not in st.session_state or st.session_state.last_file != uploaded_file.name:
+            st.session_state.data_processed = False
+            st.session_state.last_file = uploaded_file.name
+            st.session_state.chat_history = [] # 换了新表，清空聊天记录
+
+        if st.button("🚀 开始分析与预估", type="primary") or st.session_state.data_processed:
+            st.session_state.data_processed = True
+            
             try:
                 # ==========================================
-                # 4. 根据动态映射进行数据处理
+                # 4. 数据处理与预估
                 # ==========================================
-                with st.spinner('⏳ 正在依据自定义映射解析数据...'):
-                    # 处理整体数据
-                    df_overall = pd.read_excel(uploaded_file, sheet_name=sheet_overall)
-                    # 动态剔除汇总行
-                    df_overall = df_overall[df_overall[st.session_state.col_date] != st.session_state.exclude_word].copy()
-                    df_overall[st.session_state.col_date] = pd.to_datetime(df_overall[st.session_state.col_date]).dt.strftime('%Y/%m/%d')
-                    
-                    # 处理分天堆叠表
-                    raw_daily = pd.read_excel(uploaded_file, sheet_name=sheet_daily, header=None)
-                    
-                    # 动态获取切割关键字
-                    split_keywords = [k.strip() for k in st.session_state.split_keys.split(',')]
-                    header_indices = raw_daily[raw_daily[0].isin(split_keywords)].index.tolist()
-                    
-                    # 动态获取表格命名顺序
-                    table_names = [n.strip() for n in st.session_state.block_order.split(',')]
-                    tables = {}
-                    
-                    for i in range(len(header_indices)):
-                        start_idx = header_indices[i]
-                        end_idx = header_indices[i+1] if i + 1 < len(header_indices) else len(raw_daily)
-                        temp_df = raw_daily.iloc[start_idx:end_idx].copy()
-                        temp_df.columns = temp_df.iloc[0]
-                        temp_df = temp_df[1:].dropna(how='all').reset_index(drop=True)
-                        # 防止用户给的表名数量少于实际切块数量
-                        current_name = table_names[i] if i < len(table_names) else f"未知表格_{i}"
-                        tables[current_name] = temp_df
+                if 'df_overall' not in st.session_state: # 避免每次交互重复读表
+                    with st.spinner('⏳ 正在依据自定义映射解析数据...'):
+                        df_overall = pd.read_excel(uploaded_file, sheet_name=sheet_overall)
+                        df_overall = df_overall[df_overall[st.session_state.col_date] != st.session_state.exclude_word].copy()
+                        df_overall[st.session_state.col_date] = pd.to_datetime(df_overall[st.session_state.col_date]).dt.strftime('%Y/%m/%d')
+                        st.session_state.df_overall = df_overall
                         
-                with st.spinner('📐 正在运行数学模型填补空值...'):
-                    # 动态获取映射好的四个核心表
-                    df_reg_retention = tables.get(table_names[0])
-                    df_pay_retention = tables.get(table_names[1])
-                    df_roi = tables.get(table_names[2])
-                    df_ltv = tables.get(table_names[3])
+                        raw_daily = pd.read_excel(uploaded_file, sheet_name=sheet_daily, header=None)
+                        split_keywords = [k.strip() for k in st.session_state.split_keys.split(',')]
+                        header_indices = raw_daily[raw_daily[0].isin(split_keywords)].index.tolist()
+                        table_names = [n.strip() for n in st.session_state.block_order.split(',')]
+                        tables = {}
+                        
+                        for i in range(len(header_indices)):
+                            start_idx = header_indices[i]
+                            end_idx = header_indices[i+1] if i + 1 < len(header_indices) else len(raw_daily)
+                            temp_df = raw_daily.iloc[start_idx:end_idx].copy()
+                            temp_df.columns = temp_df.iloc[0]
+                            temp_df = temp_df[1:].dropna(how='all').reset_index(drop=True)
+                            current_name = table_names[i] if i < len(table_names) else f"未知表格_{i}"
+                            tables[current_name] = temp_df
+                            
+                    with st.spinner('📐 正在运行数学模型填补空值...'):
+                        df_reg_retention = tables.get(table_names[0])
+                        df_pay_retention = tables.get(table_names[1])
+                        df_roi = tables.get(table_names[2])
+                        df_ltv = tables.get(table_names[3])
 
-                    df_reg_retention_filled = predict_and_fill(df_reg_retention, power_curve, is_retention=True)
-                    df_pay_retention_filled = predict_and_fill(df_pay_retention, power_curve, is_retention=True)
-                    df_ltv_filled = predict_and_fill(df_ltv, log_curve, is_retention=False)
-                    df_roi_filled = predict_and_fill(df_roi, log_curve, is_retention=False)
+                        df_reg_retention_filled = predict_and_fill(df_reg_retention, power_curve, is_retention=True)
+                        df_pay_retention_filled = predict_and_fill(df_pay_retention, power_curve, is_retention=True)
+                        df_ltv_filled = predict_and_fill(df_ltv, log_curve, is_retention=False)
+                        df_roi_filled = predict_and_fill(df_roi, log_curve, is_retention=False)
 
-                with st.spinner('🎨 正在渲染高亮表格...'):
-                    excel_buffer = io.BytesIO()
-                    with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
-                        df_overall.to_excel(writer, sheet_name='整体数据', index=False)
-                        df_reg_retention_filled.style.apply(lambda x: highlight_predicted_cells(df_reg_retention_filled, df_reg_retention), axis=None).to_excel(writer, sheet_name=table_names[0], index=False)
-                        df_pay_retention_filled.style.apply(lambda x: highlight_predicted_cells(df_pay_retention_filled, df_pay_retention), axis=None).to_excel(writer, sheet_name=table_names[1], index=False)
-                        df_roi_filled.style.apply(lambda x: highlight_predicted_cells(df_roi_filled, df_roi), axis=None).to_excel(writer, sheet_name=table_names[2], index=False)
-                        df_ltv_filled.style.apply(lambda x: highlight_predicted_cells(df_ltv_filled, df_ltv), axis=None).to_excel(writer, sheet_name=table_names[3], index=False)
-                    
-                    st.session_state.excel_data = excel_buffer.getvalue()
-                    
-                st.success("🎉 数据处理完毕！点击下方获取报表。")
+                    with st.spinner('🎨 正在渲染高亮表格...'):
+                        excel_buffer = io.BytesIO()
+                        with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+                            st.session_state.df_overall.to_excel(writer, sheet_name='整体数据', index=False)
+                            df_reg_retention_filled.style.apply(lambda x: highlight_predicted_cells(df_reg_retention_filled, df_reg_retention), axis=None).to_excel(writer, sheet_name=table_names[0], index=False)
+                            df_pay_retention_filled.style.apply(lambda x: highlight_predicted_cells(df_pay_retention_filled, df_pay_retention), axis=None).to_excel(writer, sheet_name=table_names[1], index=False)
+                            df_roi_filled.style.apply(lambda x: highlight_predicted_cells(df_roi_filled, df_roi), axis=None).to_excel(writer, sheet_name=table_names[2], index=False)
+                            df_ltv_filled.style.apply(lambda x: highlight_predicted_cells(df_ltv_filled, df_ltv), axis=None).to_excel(writer, sheet_name=table_names[3], index=False)
+                        
+                        st.session_state.excel_data = excel_buffer.getvalue()
+
+                        latest_date = st.session_state.df_overall.iloc[-1][st.session_state.col_date]
+                        st.session_state.latest_date = latest_date
+                        
+                        try:
+                            d30_reg_retention = df_reg_retention_filled[df_reg_retention_filled.iloc[:, 0] == latest_date].iloc[0, -1]
+                            d30_pay_retention = df_pay_retention_filled[df_pay_retention_filled.iloc[:, 0] == latest_date].iloc[0, -1]
+                            d30_ltv = df_ltv_filled[df_ltv_filled.iloc[:, 0] == latest_date].iloc[0, -1]
+                            d30_roi = df_roi_filled[df_roi_filled.iloc[:, 0] == latest_date].iloc[0, -1]
+                        except:
+                            d30_reg_retention, d30_pay_retention, d30_ltv, d30_roi = 0, 0, 0, 0
+
+                        # 预埋变量供后续 AI 使用
+                        st.session_state.d30_metrics = {
+                            "reg_retention": d30_reg_retention, "pay_retention": d30_pay_retention,
+                            "ltv": d30_ltv, "roi": d30_roi
+                        }
+
+                st.success("🎉 数据处理完毕！")
                 st.download_button(
                     label="📥 下载动态预测报表 (Excel)",
                     data=st.session_state.excel_data,
@@ -175,80 +185,111 @@ if uploaded_file is not None:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
 
+                # ==========================================
+                # 5. AI 分层诊断报告 & 6. 飞书推送
+                # ==========================================
                 st.markdown("---")
+                
+                # 使用 Tabs 来组织界面，让页面不那么冗长
+                tab1, tab2 = st.tabs(["📑 标准业务诊断", "💬 ChatBI 交互查询"])
+                
+                with tab1:
+                    st.header("🤖 AI 游戏运营总监 诊断报告")
+                    overall_data_md = st.session_state.df_overall.tail(7).to_markdown(index=False)
+                    
+                    if 'basic_report' not in st.session_state:
+                        prompt_basic = f"""
+                        你是一位海外游戏发行运营。请根据以下数据，输出一份极其精炼的【基础分析】。
+                        【数据】：最新日期 {st.session_state.latest_date}。30日预估：注册留存 {st.session_state.d30_metrics['reg_retention'] * 100:.2f}%，付费留存 {st.session_state.d30_metrics['pay_retention'] * 100:.2f}%，LTV ${st.session_state.d30_metrics['ltv']:.2f}，ROI {st.session_state.d30_metrics['roi'] * 100:.2f}%。
+                        附近7天大盘：\n{overall_data_md}\n
+                        要求：采用要点式输出。分析大盘趋势与回本结论。控制在150字左右。
+                        """
+                        model = genai.GenerativeModel('gemini-2.5-flash-lite')
+                        with st.spinner('🚀 正在提炼基础诊断...'):
+                            st.session_state.basic_report = model.generate_content(prompt_basic).text
+                            st.session_state.deep_report = None 
+
+                    st.info(f"📅 **诊断日期：** {st.session_state.latest_date}")
+                    st.markdown("### 📊 基础数据速览")
+                    st.markdown(st.session_state.basic_report)
+
+                    if st.session_state.deep_report is None:
+                        if st.button("🔍 需要更深度的业务剖析？", type="primary"):
+                            prompt_deep = f"基于最新数据{st.session_state.latest_date}，请从UA买量、留存变现双层结构、长线LTV三个维度进行专业发行深度剖析。大盘数据如下：\n{overall_data_md}"
+                            with st.spinner('🔬 正在生成深度剖析...'):
+                                model = genai.GenerativeModel('gemini-2.5-flash-lite')
+                                st.session_state.deep_report = model.generate_content(prompt_deep).text
+                                st.rerun()
+
+                    if st.session_state.deep_report is not None:
+                        st.markdown("---")
+                        st.markdown("### 🔬 深度业务剖析")
+                        st.markdown(st.session_state.deep_report)
+                        if st.button("收起深度报告"):
+                            st.session_state.deep_report = None
+                            st.rerun()
+
+                    st.markdown("---")
+                    if st.button("🚀 一键推送到飞书群"):
+                        webhook_url = "https://open.feishu.cn/open-apis/bot/v2/hook/20a3f60d-36f2-4a73-9879-3058c697a7b8"
+                        msg_content = f"📅 【游戏数据预估与诊断日报】 {st.session_state.latest_date}\n\n📊 --- 基础数据速览 ---\n{st.session_state.basic_report}"
+                        if st.session_state.deep_report:
+                            msg_content += f"\n\n🔬 --- 深度业务剖析 ---\n{st.session_state.deep_report}"
+                        payload = {"msg_type": "text", "content": {"text": msg_content}}
+                        headers = {'Content-Type': 'application/json'}
+                        try:
+                            res = requests.post(webhook_url, data=json.dumps(payload), headers=headers)
+                            if res.status_code == 200: st.success("✅ 推送成功！")
+                            else: st.error("❌ 推送失败")
+                        except:
+                            st.error("网络请求错误")
 
                 # ==========================================
-                # 5. AI 分层诊断报告
+                # 7. ChatBI 业务数据问答助理 (本次新增核心功能)
                 # ==========================================
-                st.header("🤖 AI 游戏运营总监 诊断报告")
-                
-                overall_data_md = df_overall.tail(7).to_markdown(index=False)
-                # 使用动态映射的日期列名去获取最后一天
-                latest_date = df_overall.iloc[-1][st.session_state.col_date]
-                
-                # 安全提取30天数据
-                try:
-                    d30_reg_retention = df_reg_retention_filled[df_reg_retention_filled.iloc[:, 0] == latest_date].iloc[0, -1]
-                    d30_pay_retention = df_pay_retention_filled[df_pay_retention_filled.iloc[:, 0] == latest_date].iloc[0, -1]
-                    d30_ltv = df_ltv_filled[df_ltv_filled.iloc[:, 0] == latest_date].iloc[0, -1]
-                    d30_roi = df_roi_filled[df_roi_filled.iloc[:, 0] == latest_date].iloc[0, -1]
-                except:
-                    d30_reg_retention, d30_pay_retention, d30_ltv, d30_roi = 0, 0, 0, 0
+                with tab2:
+                    st.subheader("💬 对话式数据查询")
+                    st.markdown("可以直接向 AI 询问有关当前表格的数据细节或计算对比。")
+                    
+                    # 渲染历史对话记录
+                    for message in st.session_state.chat_history:
+                        with st.chat_message(message["role"]):
+                            st.markdown(message["content"])
 
-                prompt_basic = f"""
-                你是一位海外游戏发行运营。请根据以下数据，输出一份极其精炼的【基础分析】。
-                【数据】：最新日期 {latest_date}。30日预估：注册留存 {d30_reg_retention * 100:.2f}%，付费留存 {d30_pay_retention * 100:.2f}%，LTV ${d30_ltv:.2f}，ROI {d30_roi * 100:.2f}%。
-                附近7天大盘：
-                {overall_data_md}
-                要求：不要任何废话和客套话，采用要点式输出。分析大盘趋势与回本结论。控制在150字左右。
-                """
+                    # 底部聊天输入框
+                    if user_query := st.chat_input("例如：帮我对比最后两天的首日ARPU涨幅是多少？"):
+                        # 显示用户提问
+                        with st.chat_message("user"):
+                            st.markdown(user_query)
+                        # 保存用户消息
+                        st.session_state.chat_history.append({"role": "user", "content": user_query})
 
-                model = genai.GenerativeModel('gemini-2.5-flash-lite')
-                
-                with st.spinner('🚀 正在提炼基础诊断...'):
-                    st.session_state.basic_report = model.generate_content(prompt_basic).text
-                    st.session_state.deep_report = None # 重置深度报告
-                    st.session_state.latest_date = latest_date
+                        # 将当前内存里的整个大盘数据转为上下文
+                        full_context_data = st.session_state.df_overall.to_markdown(index=False)
+                        
+                        chat_prompt = f"""
+                        你现在是一位资深的出海游戏数据分析师。请仔细阅读以下我刚刚上传的游戏大盘业务数据，并回答我的提问。
+                        
+                        【近期大盘核心数据】：
+                        {full_context_data}
+                        
+                        【用户的具体问题】：
+                        {user_query}
+                        
+                        回答要求：
+                        1. 语气像专业的数据分析同事。
+                        2. 必须结合提供的表格数据进行精确的数值计算或对比。
+                        3. 如果问题超出了所给的数据范围，请如实告知无法计算。
+                        """
+
+                        with st.chat_message("assistant"):
+                            with st.spinner("🤔 AI 分析师正在计算数据..."):
+                                chat_model = genai.GenerativeModel('gemini-2.5-flash-lite')
+                                response = chat_model.generate_content(chat_prompt)
+                                st.markdown(response.text)
+                        
+                        # 保存 AI 回复
+                        st.session_state.chat_history.append({"role": "assistant", "content": response.text})
 
             except Exception as e:
-                st.error(f"处理过程中发生错误，请检查您的字段映射是否正确。错误详情：{e}")
-
-        # 报告渲染区域 (放在执行按钮外部，以防页面刷新消失)
-        if 'basic_report' in st.session_state and st.session_state.basic_report is not None:
-            st.info(f"📅 **诊断日期：** {st.session_state.latest_date}")
-            st.markdown("### 📊 基础数据速览")
-            st.markdown(st.session_state.basic_report)
-
-            if st.session_state.deep_report is None:
-                if st.button("🔍 需要更深度的业务剖析？", type="primary"):
-                    # 组装深度Prompt... (同前，为节省空间省略组装字符串过程，直接调用)
-                    prompt_deep = f"基于最新数据{st.session_state.latest_date}，请从UA买量、留存变现双层结构、长线LTV三个维度进行专业发行深度剖析。大盘数据如下：\n{overall_data_md}"
-                    with st.spinner('🔬 正在生成深度剖析...'):
-                        model = genai.GenerativeModel('gemini-2.5-flash-lite')
-                        st.session_state.deep_report = model.generate_content(prompt_deep).text
-                        st.rerun()
-
-            if st.session_state.deep_report is not None:
-                st.markdown("---")
-                st.markdown("### 🔬 深度业务剖析")
-                st.markdown(st.session_state.deep_report)
-                if st.button("收起深度报告"):
-                    st.session_state.deep_report = None
-                    st.rerun()
-
-            # 飞书推送功能
-            st.markdown("---")
-            if st.button("🚀 一键推送到飞书群"):
-                webhook_url = "https://open.feishu.cn/open-apis/bot/v2/hook/20a3f60d-36f2-4a73-9879-3058c697a7b8"
-                msg_content = f"📅 【游戏数据预估与诊断日报】 {st.session_state.latest_date}\n\n📊 --- 基础数据速览 ---\n{st.session_state.basic_report}"
-                if st.session_state.deep_report:
-                    msg_content += f"\n\n🔬 --- 深度业务剖析 ---\n{st.session_state.deep_report}"
-                
-                payload = {"msg_type": "text", "content": {"text": msg_content}}
-                headers = {'Content-Type': 'application/json'}
-                try:
-                    res = requests.post(webhook_url, data=json.dumps(payload), headers=headers)
-                    if res.status_code == 200: st.success("✅ 推送成功！")
-                    else: st.error("❌ 推送失败")
-                except:
-                    st.error("网络请求错误")
+                st.error(f"处理过程中发生错误，请检查表单映射。错误详情：{e}")
