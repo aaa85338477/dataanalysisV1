@@ -8,6 +8,7 @@ import warnings
 import requests
 import json
 
+# 忽略计算过程中的警告
 warnings.filterwarnings('ignore')
 
 # ==========================================
@@ -16,6 +17,7 @@ warnings.filterwarnings('ignore')
 st.set_page_config(page_title="出海游戏 | 数据预估与诊断系统", page_icon="📈", layout="wide")
 st.title("📈 游戏核心指标自动预估与 AI 诊断系统")
 
+# 初始化缓存映射字典 (缓存用户习惯)
 default_mapping = {
     'col_date': '日期',
     'exclude_word': '汇总',
@@ -103,11 +105,10 @@ if uploaded_file is not None:
     if not api_key_input:
         st.warning("👈 请先在左侧边栏输入您的 Gemini API Key。")
     else:
-        # 使用 Session State 记录是否已经分析过，避免切换选项卡时重跑
         if "data_processed" not in st.session_state or st.session_state.last_file != uploaded_file.name:
             st.session_state.data_processed = False
             st.session_state.last_file = uploaded_file.name
-            st.session_state.chat_history = [] # 换了新表，清空聊天记录
+            st.session_state.chat_history = [] 
 
         if st.button("🚀 开始分析与预估", type="primary") or st.session_state.data_processed:
             st.session_state.data_processed = True
@@ -116,7 +117,7 @@ if uploaded_file is not None:
                 # ==========================================
                 # 4. 数据处理与预估
                 # ==========================================
-                if 'df_overall' not in st.session_state: # 避免每次交互重复读表
+                if 'df_overall' not in st.session_state or st.session_state.last_file != uploaded_file.name:
                     with st.spinner('⏳ 正在依据自定义映射解析数据...'):
                         df_overall = pd.read_excel(uploaded_file, sheet_name=sheet_overall)
                         df_overall = df_overall[df_overall[st.session_state.col_date] != st.session_state.exclude_word].copy()
@@ -148,6 +149,13 @@ if uploaded_file is not None:
                         df_pay_retention_filled = predict_and_fill(df_pay_retention, power_curve, is_retention=True)
                         df_ltv_filled = predict_and_fill(df_ltv, log_curve, is_retention=False)
                         df_roi_filled = predict_and_fill(df_roi, log_curve, is_retention=False)
+                        
+                        # 把分天预测数据也存入 Session State，供 ChatBI 使用
+                        st.session_state.df_reg = df_reg_retention_filled
+                        st.session_state.df_pay = df_pay_retention_filled
+                        st.session_state.df_roi = df_roi_filled
+                        st.session_state.df_ltv = df_ltv_filled
+                        st.session_state.table_names = table_names
 
                     with st.spinner('🎨 正在渲染高亮表格...'):
                         excel_buffer = io.BytesIO()
@@ -171,7 +179,6 @@ if uploaded_file is not None:
                         except:
                             d30_reg_retention, d30_pay_retention, d30_ltv, d30_roi = 0, 0, 0, 0
 
-                        # 预埋变量供后续 AI 使用
                         st.session_state.d30_metrics = {
                             "reg_retention": d30_reg_retention, "pay_retention": d30_pay_retention,
                             "ltv": d30_ltv, "roi": d30_roi
@@ -186,18 +193,16 @@ if uploaded_file is not None:
                 )
 
                 # ==========================================
-                # 5. AI 分层诊断报告 & 6. 飞书推送
+                # 5. AI 分层诊断报告 & 6. 飞书推送 & 7. ChatBI
                 # ==========================================
                 st.markdown("---")
-                
-                # 使用 Tabs 来组织界面，让页面不那么冗长
                 tab1, tab2 = st.tabs(["📑 标准业务诊断", "💬 ChatBI 交互查询"])
                 
                 with tab1:
                     st.header("🤖 AI 游戏运营总监 诊断报告")
                     overall_data_md = st.session_state.df_overall.tail(7).to_markdown(index=False)
                     
-                    if 'basic_report' not in st.session_state:
+                    if 'basic_report' not in st.session_state or st.session_state.last_file != uploaded_file.name:
                         prompt_basic = f"""
                         你是一位海外游戏发行运营。请根据以下数据，输出一份极其精炼的【基础分析】。
                         【数据】：最新日期 {st.session_state.latest_date}。30日预估：注册留存 {st.session_state.d30_metrics['reg_retention'] * 100:.2f}%，付费留存 {st.session_state.d30_metrics['pay_retention'] * 100:.2f}%，LTV ${st.session_state.d30_metrics['ltv']:.2f}，ROI {st.session_state.d30_metrics['roi'] * 100:.2f}%。
@@ -244,33 +249,44 @@ if uploaded_file is not None:
                         except:
                             st.error("网络请求错误")
 
-                # ==========================================
-                # 7. ChatBI 业务数据问答助理 (本次新增核心功能)
-                # ==========================================
                 with tab2:
                     st.subheader("💬 对话式数据查询")
-                    st.markdown("可以直接向 AI 询问有关当前表格的数据细节或计算对比。")
+                    st.markdown("可以直接向 AI 询问有关当前大盘表格或预测表格的数据细节。")
                     
-                    # 渲染历史对话记录
                     for message in st.session_state.chat_history:
                         with st.chat_message(message["role"]):
                             st.markdown(message["content"])
 
-                    # 底部聊天输入框
-                    if user_query := st.chat_input("例如：帮我对比最后两天的首日ARPU涨幅是多少？"):
-                        # 显示用户提问
+                    if user_query := st.chat_input("例如：帮我对比最后两天的首日ARPU，以及7月24日目前的30日预测LTV是多少？"):
                         with st.chat_message("user"):
                             st.markdown(user_query)
-                        # 保存用户消息
                         st.session_state.chat_history.append({"role": "user", "content": user_query})
 
-                        # 将当前内存里的整个大盘数据转为上下文
-                        full_context_data = st.session_state.df_overall.to_markdown(index=False)
+                        # 整合大盘数据与分天预估数据 (取最近14天避免Token超限)
+                        overall_md = st.session_state.df_overall.to_markdown(index=False)
+                        reg_md = st.session_state.df_reg.tail(14).to_markdown(index=False)
+                        pay_md = st.session_state.df_pay.tail(14).to_markdown(index=False)
+                        roi_md = st.session_state.df_roi.tail(14).to_markdown(index=False)
+                        ltv_md = st.session_state.df_ltv.tail(14).to_markdown(index=False)
+
+                        full_context_data = f"""
+                        【1. 大盘整体核心数据】
+                        {overall_md}
+                        
+                        【2. 核心预估指标分天明细 (最近14天)】
+                        --- {st.session_state.table_names[0]} ---
+                        {reg_md}
+                        --- {st.session_state.table_names[1]} ---
+                        {pay_md}
+                        --- {st.session_state.table_names[2]} ---
+                        {roi_md}
+                        --- {st.session_state.table_names[3]} ---
+                        {ltv_md}
+                        """
                         
                         chat_prompt = f"""
-                        你现在是一位资深的出海游戏数据分析师。请仔细阅读以下我刚刚上传的游戏大盘业务数据，并回答我的提问。
+                        你现在是一位资深的出海游戏数据分析师。请仔细阅读以下我刚刚上传的游戏业务数据（包含大盘与核心分天预估数据），并回答我的提问。
                         
-                        【近期大盘核心数据】：
                         {full_context_data}
                         
                         【用户的具体问题】：
@@ -288,7 +304,6 @@ if uploaded_file is not None:
                                 response = chat_model.generate_content(chat_prompt)
                                 st.markdown(response.text)
                         
-                        # 保存 AI 回复
                         st.session_state.chat_history.append({"role": "assistant", "content": response.text})
 
             except Exception as e:
