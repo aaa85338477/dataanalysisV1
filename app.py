@@ -8,16 +8,14 @@ import warnings
 import requests
 import json
 
-# 忽略计算过程中的警告
 warnings.filterwarnings('ignore')
 
 # ==========================================
 # 1. 页面与默认缓存配置
 # ==========================================
-st.set_page_config(page_title="出海游戏 | 数据预估与诊断系统", page_icon="📈", layout="wide")
-st.title("📈 游戏核心指标自动预估与 AI 诊断系统")
+st.set_page_config(page_title="出海游戏 | 智能归因与数据预估中台", page_icon="🧠", layout="wide")
+st.title("🧠 游戏核心指标 AutoML 预估与 RCA 诊断系统")
 
-# 初始化缓存映射字典 (缓存用户习惯)
 default_mapping = {
     'col_date': '日期',
     'exclude_word': '汇总',
@@ -32,40 +30,67 @@ with st.sidebar:
     st.header("⚙️ 系统配置")
     api_key_input = st.text_input("请输入 Gemini API Key", type="password")
     st.markdown("---")
-    st.markdown("### 工具说明\n- **留存预测**：幂函数\n- **变现预测**：对数函数")
+    st.markdown("### 🔬 V3.0 引擎说明\n- **AutoML 算法池**：动态计算 MSE 选择最优拟合模型。\n- **RCA 智能归因**：皮尔逊相关性矩阵扫描。")
     if api_key_input:
         genai.configure(api_key=api_key_input)
 
 # ==========================================
-# 2. 核心数学预估与样式函数
+# 2. AutoML：动态算法池与核心预测引擎
 # ==========================================
+# 定义基础数学模型
 def power_curve(x, a, b): return a * np.power(x, b)
 def log_curve(x, a, b): return a * np.log(x) + b
+def exp_curve(x, a, b): return a * np.exp(b * x)
+def linear_curve(x, a, b): return a * x + b
 
-def predict_and_fill(df, model_func, is_retention=False):
+# 定义留存和变现的候选算法池
+RETENTION_MODELS = {'幂函数(Power)': power_curve, '指数函数(Exponential)': exp_curve}
+REVENUE_MODELS = {'对数函数(Logarithmic)': log_curve, '线性函数(Linear)': linear_curve, '幂函数(Power)': power_curve}
+
+def predict_and_fill_automl(df, candidate_models, is_retention=False):
     df_calc = df.set_index(df.columns[0]).astype(float)
     filled_data = []
+    best_model_for_latest = "未知" # 记录最后一天选用的最优模型
+    
     for date, row in df_calc.iterrows():
         y = row.values
         x = np.arange(1, len(y) + 1)
         mask = ~np.isnan(y)
         x_train, y_train = x[mask], y[mask]
+        
         if len(x_train) >= 3:
-            try:
-                popt, _ = curve_fit(model_func, x_train, y_train, maxfev=10000)
-                y_pred = model_func(x, *popt)
-                y_final = np.where(mask, y, y_pred)
-                if is_retention: y_final = np.clip(y_final, 0, 1)
-                else: y_final = np.maximum(y_final, 0)
-                filled_data.append(y_final)
-            except:
-                filled_data.append(y)
+            best_mse = float('inf')
+            best_y_final = y
+            best_model_name = "未拟合"
+            
+            # AutoML 核心：遍历候选模型池，寻找最小均方误差 (MSE)
+            for model_name, model_func in candidate_models.items():
+                try:
+                    popt, _ = curve_fit(model_func, x_train, y_train, maxfev=10000)
+                    y_pred_train = model_func(x_train, *popt)
+                    mse = np.mean((y_train - y_pred_train) ** 2) # 计算误差
+                    
+                    if mse < best_mse:
+                        best_mse = mse
+                        y_pred_full = model_func(x, *popt)
+                        y_final = np.where(mask, y, y_pred_full)
+                        if is_retention: y_final = np.clip(y_final, 0, 1)
+                        else: y_final = np.maximum(y_final, 0)
+                        
+                        best_y_final = y_final
+                        best_model_name = model_name
+                except:
+                    continue
+            
+            filled_data.append(best_y_final)
+            best_model_for_latest = best_model_name
         else:
             filled_data.append(y)
+            
     df_filled = pd.DataFrame(filled_data, index=df_calc.index, columns=df_calc.columns)
     df_filled = df_filled.round(4).reset_index()
     df_filled[df_filled.columns[0]] = pd.to_datetime(df_filled[df_filled.columns[0]]).dt.strftime('%Y/%m/%d')
-    return df_filled
+    return df_filled, best_model_for_latest
 
 def highlight_predicted_cells(df_filled, df_raw):
     styles = pd.DataFrame('', index=df_filled.index, columns=df_filled.columns)
@@ -77,7 +102,33 @@ def highlight_predicted_cells(df_filled, df_raw):
     return styles
 
 # ==========================================
-# 3. 主页面：文件上传与动态映射面板
+# 3. RCA：智能归因分析引擎 (皮尔逊相关系数)
+# ==========================================
+def calculate_rca_correlations(df):
+    # 只提取数值列进行相关性计算
+    numeric_df = df.select_dtypes(include=[np.number])
+    if numeric_df.empty: return "数据不足，无法计算相关性。"
+    
+    corr_matrix = numeric_df.corr()
+    strong_pairs = []
+    
+    # 筛选绝对值大于 0.7 的强相关指标
+    for i in range(len(corr_matrix.columns)):
+        for j in range(i+1, len(corr_matrix.columns)):
+            col1 = corr_matrix.columns[i]
+            col2 = corr_matrix.columns[j]
+            corr_val = corr_matrix.iloc[i, j]
+            if abs(corr_val) > 0.7:
+                trend = "正相关(同涨同跌)" if corr_val > 0 else "负相关(此消彼长)"
+                strong_pairs.append(f"- 【{col1}】与【{col2}】呈强烈的 **{trend}** (r={corr_val:.2f})")
+                
+    if not strong_pairs:
+        return "近期各项指标相对独立，未发现显著的强关联特征。"
+    return "\n".join(strong_pairs)
+
+
+# ==========================================
+# 4. 主页面：文件上传与动态映射面板
 # ==========================================
 uploaded_file = st.file_uploader("📂 请上传游戏分天业务数据 (Excel格式)", type=["xlsx", "xls"])
 
@@ -110,13 +161,11 @@ if uploaded_file is not None:
             st.session_state.last_file = uploaded_file.name
             st.session_state.chat_history = [] 
 
-        if st.button("🚀 开始分析与预估", type="primary") or st.session_state.data_processed:
+        if st.button("🚀 启动 AutoML 分析与归因", type="primary") or st.session_state.data_processed:
             st.session_state.data_processed = True
             
             try:
-                # ==========================================
-                # 4. 数据处理与预估
-                # ==========================================
+                # ----------------- 数据处理 -----------------
                 if 'df_overall' not in st.session_state or st.session_state.last_file != uploaded_file.name:
                     with st.spinner('⏳ 正在依据自定义映射解析数据...'):
                         df_overall = pd.read_excel(uploaded_file, sheet_name=sheet_overall)
@@ -139,30 +188,40 @@ if uploaded_file is not None:
                             current_name = table_names[i] if i < len(table_names) else f"未知表格_{i}"
                             tables[current_name] = temp_df
                             
-                    with st.spinner('📐 正在运行数学模型填补空值...'):
-                        df_reg_retention = tables.get(table_names[0])
-                        df_pay_retention = tables.get(table_names[1])
+                    # ----------------- AutoML 预估 -----------------
+                    with st.spinner('📐 AutoML 引擎正在扫描最优算法并填补空值...'):
+                        df_reg = tables.get(table_names[0])
+                        df_pay = tables.get(table_names[1])
                         df_roi = tables.get(table_names[2])
                         df_ltv = tables.get(table_names[3])
 
-                        df_reg_retention_filled = predict_and_fill(df_reg_retention, power_curve, is_retention=True)
-                        df_pay_retention_filled = predict_and_fill(df_pay_retention, power_curve, is_retention=True)
-                        df_ltv_filled = predict_and_fill(df_ltv, log_curve, is_retention=False)
-                        df_roi_filled = predict_and_fill(df_roi, log_curve, is_retention=False)
+                        df_reg_filled, best_reg_model = predict_and_fill_automl(df_reg, RETENTION_MODELS, is_retention=True)
+                        df_pay_filled, best_pay_model = predict_and_fill_automl(df_pay, RETENTION_MODELS, is_retention=True)
+                        df_roi_filled, best_roi_model = predict_and_fill_automl(df_roi, REVENUE_MODELS, is_retention=False)
+                        df_ltv_filled, best_ltv_model = predict_and_fill_automl(df_ltv, REVENUE_MODELS, is_retention=False)
                         
-                        # 把分天预测数据也存入 Session State，供 ChatBI 使用
-                        st.session_state.df_reg = df_reg_retention_filled
-                        st.session_state.df_pay = df_pay_retention_filled
+                        st.session_state.df_reg = df_reg_filled
+                        st.session_state.df_pay = df_pay_filled
                         st.session_state.df_roi = df_roi_filled
                         st.session_state.df_ltv = df_ltv_filled
                         st.session_state.table_names = table_names
+                        
+                        # 保存 AutoML 选出的最优模型
+                        st.session_state.automl_models = {
+                            "注册留存": best_reg_model, "付费留存": best_pay_model,
+                            "ROI": best_roi_model, "LTV": best_ltv_model
+                        }
+                        
+                    # ----------------- RCA 归因 -----------------
+                    with st.spinner('🔍 正在计算大盘指标的底层相关性 (RCA)...'):
+                        st.session_state.rca_context = calculate_rca_correlations(st.session_state.df_overall.tail(14))
 
                     with st.spinner('🎨 正在渲染高亮表格...'):
                         excel_buffer = io.BytesIO()
                         with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
                             st.session_state.df_overall.to_excel(writer, sheet_name='整体数据', index=False)
-                            df_reg_retention_filled.style.apply(lambda x: highlight_predicted_cells(df_reg_retention_filled, df_reg_retention), axis=None).to_excel(writer, sheet_name=table_names[0], index=False)
-                            df_pay_retention_filled.style.apply(lambda x: highlight_predicted_cells(df_pay_retention_filled, df_pay_retention), axis=None).to_excel(writer, sheet_name=table_names[1], index=False)
+                            df_reg_filled.style.apply(lambda x: highlight_predicted_cells(df_reg_filled, df_reg), axis=None).to_excel(writer, sheet_name=table_names[0], index=False)
+                            df_pay_filled.style.apply(lambda x: highlight_predicted_cells(df_pay_filled, df_pay), axis=None).to_excel(writer, sheet_name=table_names[1], index=False)
                             df_roi_filled.style.apply(lambda x: highlight_predicted_cells(df_roi_filled, df_roi), axis=None).to_excel(writer, sheet_name=table_names[2], index=False)
                             df_ltv_filled.style.apply(lambda x: highlight_predicted_cells(df_ltv_filled, df_ltv), axis=None).to_excel(writer, sheet_name=table_names[3], index=False)
                         
@@ -172,34 +231,29 @@ if uploaded_file is not None:
                         st.session_state.latest_date = latest_date
                         
                         try:
-                            d30_reg_retention = df_reg_retention_filled[df_reg_retention_filled.iloc[:, 0] == latest_date].iloc[0, -1]
-                            d30_pay_retention = df_pay_retention_filled[df_pay_retention_filled.iloc[:, 0] == latest_date].iloc[0, -1]
+                            d30_reg = df_reg_filled[df_reg_filled.iloc[:, 0] == latest_date].iloc[0, -1]
+                            d30_pay = df_pay_filled[df_pay_filled.iloc[:, 0] == latest_date].iloc[0, -1]
                             d30_ltv = df_ltv_filled[df_ltv_filled.iloc[:, 0] == latest_date].iloc[0, -1]
                             d30_roi = df_roi_filled[df_roi_filled.iloc[:, 0] == latest_date].iloc[0, -1]
                         except:
-                            d30_reg_retention, d30_pay_retention, d30_ltv, d30_roi = 0, 0, 0, 0
+                            d30_reg, d30_pay, d30_ltv, d30_roi = 0, 0, 0, 0
 
                         st.session_state.d30_metrics = {
-                            "reg_retention": d30_reg_retention, "pay_retention": d30_pay_retention,
+                            "reg_retention": d30_reg, "pay_retention": d30_pay,
                             "ltv": d30_ltv, "roi": d30_roi
                         }
 
-                st.success("🎉 数据处理完毕！")
-                st.download_button(
-                    label="📥 下载动态预测报表 (Excel)",
-                    data=st.session_state.excel_data,
-                    file_name="AI_Dynamic_Prediction.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+                # ----------------- UI 结果展示 -----------------
+                col_btn, col_info = st.columns([1, 2])
+                with col_btn:
+                    st.download_button("📥 下载 AutoML 预测报表 (Excel)", data=st.session_state.excel_data, file_name="AI_Dynamic_Prediction_V3.xlsx")
+                with col_info:
+                    st.success(f"🤖 **AutoML 最新日 ({st.session_state.latest_date}) 模型选择：** LTV采用 [{st.session_state.automl_models['LTV']}]，留存采用 [{st.session_state.automl_models['注册留存']}]")
 
-                # ==========================================
-                # 5. AI 分层诊断报告 & 6. 飞书推送 & 7. ChatBI
-                # ==========================================
                 st.markdown("---")
-                tab1, tab2 = st.tabs(["📑 标准业务诊断", "💬 ChatBI 交互查询"])
+                tab1, tab2 = st.tabs(["📑 RCA 深度诊断报告", "💬 ChatBI 交互查询"])
                 
                 with tab1:
-                    st.header("🤖 AI 游戏运营总监 诊断报告")
                     overall_data_md = st.session_state.df_overall.tail(7).to_markdown(index=False)
                     
                     if 'basic_report' not in st.session_state or st.session_state.last_file != uploaded_file.name:
@@ -218,17 +272,34 @@ if uploaded_file is not None:
                     st.markdown("### 📊 基础数据速览")
                     st.markdown(st.session_state.basic_report)
 
+                    # ----------------- 触发含有 RCA 上下文的深度诊断 -----------------
                     if st.session_state.deep_report is None:
-                        if st.button("🔍 需要更深度的业务剖析？", type="primary"):
-                            prompt_deep = f"基于最新数据{st.session_state.latest_date}，请从UA买量、留存变现双层结构、长线LTV三个维度进行专业发行深度剖析。大盘数据如下：\n{overall_data_md}"
-                            with st.spinner('🔬 正在生成深度剖析...'):
+                        if st.button("🔍 结合 RCA 相关性进行深度归因剖析？", type="primary"):
+                            prompt_deep = f"""
+                            你是一位资深的海外游戏发行运营专家。请基于以下整体数据与 RCA（根因分析）相关性结果，输出一份专业的【深度业务剖析】。
+                            
+                            【大盘数据(近7天)】：
+                            {overall_data_md}
+                            
+                            【RCA 底层指标相关性扫描结果】（这是代码跑出的数学强相关线索）：
+                            {st.session_state.rca_context}
+                            
+                            要求摒弃套话，结合 RCA 线索，从以下三个维度展开：
+                            1. **UA（用户获取）与初期付费**：评估首日付费率与新增ARPU，分析当前初期的出价空间如何。
+                            2. **RCA 归因诊断**：重点解读提供的“强相关指标对”，解释这些指标同涨同跌的底层业务逻辑（如：是因为大R拉动了整体，还是白嫖用户增多导致留存虚高？），并找出当前大盘表现的潜在突破口或隐患元凶。
+                            3. **落地调优建议**：给出至少 2 条能直接执行的调优建议。
+                            """
+                            with st.spinner('🔬 AI 正在解读 RCA 相关矩阵，撰写深度归因分析...'):
                                 model = genai.GenerativeModel('gemini-2.5-flash-lite')
                                 st.session_state.deep_report = model.generate_content(prompt_deep).text
                                 st.rerun()
 
                     if st.session_state.deep_report is not None:
                         st.markdown("---")
-                        st.markdown("### 🔬 深度业务剖析")
+                        # 将数学得出的相关性直接展示给用户看
+                        with st.expander("🛠️ 展开查看底层 RCA 相关系数矩阵", expanded=False):
+                            st.markdown(st.session_state.rca_context)
+                        st.markdown("### 🔬 RCA 深度业务归因剖析")
                         st.markdown(st.session_state.deep_report)
                         if st.button("收起深度报告"):
                             st.session_state.deep_report = None
@@ -239,11 +310,10 @@ if uploaded_file is not None:
                         webhook_url = "https://open.feishu.cn/open-apis/bot/v2/hook/20a3f60d-36f2-4a73-9879-3058c697a7b8"
                         msg_content = f"📅 【游戏数据预估与诊断日报】 {st.session_state.latest_date}\n\n📊 --- 基础数据速览 ---\n{st.session_state.basic_report}"
                         if st.session_state.deep_report:
-                            msg_content += f"\n\n🔬 --- 深度业务剖析 ---\n{st.session_state.deep_report}"
+                            msg_content += f"\n\n🔬 --- RCA 深度业务剖析 ---\n{st.session_state.deep_report}"
                         payload = {"msg_type": "text", "content": {"text": msg_content}}
-                        headers = {'Content-Type': 'application/json'}
                         try:
-                            res = requests.post(webhook_url, data=json.dumps(payload), headers=headers)
+                            res = requests.post(webhook_url, data=json.dumps(payload), headers={'Content-Type': 'application/json'})
                             if res.status_code == 200: st.success("✅ 推送成功！")
                             else: st.error("❌ 推送失败")
                         except:
@@ -251,60 +321,27 @@ if uploaded_file is not None:
 
                 with tab2:
                     st.subheader("💬 对话式数据查询")
-                    st.markdown("可以直接向 AI 询问有关当前大盘表格或预测表格的数据细节。")
-                    
                     for message in st.session_state.chat_history:
                         with st.chat_message(message["role"]):
                             st.markdown(message["content"])
 
-                    if user_query := st.chat_input("例如：帮我对比最后两天的首日ARPU，以及7月24日目前的30日预测LTV是多少？"):
-                        with st.chat_message("user"):
-                            st.markdown(user_query)
+                    if user_query := st.chat_input("向全能 AI 提问..."):
+                        with st.chat_message("user"): st.markdown(user_query)
                         st.session_state.chat_history.append({"role": "user", "content": user_query})
 
-                        # 整合大盘数据与分天预估数据 (取最近14天避免Token超限)
                         overall_md = st.session_state.df_overall.to_markdown(index=False)
                         reg_md = st.session_state.df_reg.tail(14).to_markdown(index=False)
-                        pay_md = st.session_state.df_pay.tail(14).to_markdown(index=False)
-                        roi_md = st.session_state.df_roi.tail(14).to_markdown(index=False)
                         ltv_md = st.session_state.df_ltv.tail(14).to_markdown(index=False)
 
-                        full_context_data = f"""
-                        【1. 大盘整体核心数据】
-                        {overall_md}
-                        
-                        【2. 核心预估指标分天明细 (最近14天)】
-                        --- {st.session_state.table_names[0]} ---
-                        {reg_md}
-                        --- {st.session_state.table_names[1]} ---
-                        {pay_md}
-                        --- {st.session_state.table_names[2]} ---
-                        {roi_md}
-                        --- {st.session_state.table_names[3]} ---
-                        {ltv_md}
-                        """
-                        
-                        chat_prompt = f"""
-                        你现在是一位资深的出海游戏数据分析师。请仔细阅读以下我刚刚上传的游戏业务数据（包含大盘与核心分天预估数据），并回答我的提问。
-                        
-                        {full_context_data}
-                        
-                        【用户的具体问题】：
-                        {user_query}
-                        
-                        回答要求：
-                        1. 语气像专业的数据分析同事。
-                        2. 必须结合提供的表格数据进行精确的数值计算或对比。
-                        3. 如果问题超出了所给的数据范围，请如实告知无法计算。
-                        """
+                        full_context_data = f"【1. 大盘数据】\n{overall_md}\n【2. 注册留存(近14天)】\n{reg_md}\n【3. 净收LTV(近14天)】\n{ltv_md}"
+                        chat_prompt = f"你是一位资深游戏数据分析师。根据以下数据回答。\n{full_context_data}\n【用户问题】：{user_query}"
 
                         with st.chat_message("assistant"):
-                            with st.spinner("🤔 AI 分析师正在计算数据..."):
+                            with st.spinner("🤔 AI 正在计算..."):
                                 chat_model = genai.GenerativeModel('gemini-2.5-flash-lite')
                                 response = chat_model.generate_content(chat_prompt)
                                 st.markdown(response.text)
-                        
                         st.session_state.chat_history.append({"role": "assistant", "content": response.text})
 
             except Exception as e:
-                st.error(f"处理过程中发生错误，请检查表单映射。错误详情：{e}")
+                st.error(f"处理错误：{e}")
