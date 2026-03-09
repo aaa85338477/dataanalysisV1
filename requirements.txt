@@ -2,7 +2,6 @@ streamlit
 pandas
 numpy
 scipy
-google-generativeai
 openpyxl
 tabulate
 requests
